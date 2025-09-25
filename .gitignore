@@ -1,0 +1,40 @@
+# Environment files
+.env
+*.env
+
+# Database files
+*.db
+*.db.backup
+npm_scanner_current.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+
+# Docker
+*.tar
+docker_image.*
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+debug_*.py
+*_test.py

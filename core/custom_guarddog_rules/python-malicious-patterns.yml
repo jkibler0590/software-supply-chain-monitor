@@ -1,0 +1,54 @@
+rules:
+  - id: python-network-requests
+    languages: [python]
+    message: Python package makes network requests
+    metadata:
+      description: Detects HTTP requests and remote connections in Python packages
+      category: security
+      confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: import requests
+          - pattern: import urllib
+          - pattern: import http
+          - pattern: from requests import $X
+          - pattern: from urllib import $X  
+          - pattern: requests.get($URL)
+          - pattern: requests.post($URL)
+          - pattern: urllib.request.urlopen($URL)
+          - pattern: http.client.HTTPConnection($HOST)
+    severity: INFO
+
+  - id: python-code-execution
+    languages: [python]
+    message: Python package uses dangerous code execution
+    metadata:
+      description: Detects eval, exec, and subprocess execution in Python
+      category: security
+      confidence: high
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: exec($CODE) 
+          - pattern: subprocess.call($CMD)
+          - pattern: subprocess.run($CMD)
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD)
+    severity: WARNING
+
+  - id: python-file-access
+    languages: [python]
+    message: Python package accesses sensitive files
+    metadata:
+      description: Detects access to sensitive system files and directories
+      category: security
+      confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern-regex: '.*\.ssh.*'
+          - pattern-regex: '.*\.aws.*'
+          - pattern-regex: '.*password.*'
+          - pattern-regex: '.*credential.*'
+          - pattern-regex: '/etc/passwd'
+          - pattern-regex: '/etc/shadow'
+    severity: WARNING

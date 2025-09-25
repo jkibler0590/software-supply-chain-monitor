@@ -1,0 +1,41 @@
+rules:
+  - id: npm-network-requests
+    languages: [javascript, typescript]
+    message: Package makes network requests that could be malicious
+    metadata:
+      description: Detects HTTP requests, downloads, and remote code execution
+      category: security
+      confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: require('http')
+          - pattern: require('https')
+          - pattern: require('axios')
+          - pattern: require('request')
+          - pattern: require('node-fetch')
+          - pattern: fetch($URL)
+          - pattern: axios.get($URL)
+          - pattern: axios.post($URL)
+          - pattern: request($URL)
+          - pattern: http.get($URL)
+          - pattern: https.get($URL)
+          - pattern: download($URL)
+    severity: INFO
+  
+  - id: npm-code-execution
+    languages: [javascript, typescript]
+    message: Package uses potentially dangerous code execution
+    metadata:
+      description: Detects eval, Function constructor, and child process execution
+      category: security
+      confidence: high
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: Function($CODE)
+          - pattern: new Function($CODE)
+          - pattern: require('child_process').exec($CMD)
+          - pattern: require('child_process').spawn($CMD)
+          - pattern: child_process.exec($CMD)
+          - pattern: child_process.spawn($CMD)
+    severity: WARNING

@@ -1,0 +1,41 @@
+rules:
+  - id: npm-install-scripts-detection
+    languages: [json]
+    message: Package contains potentially dangerous install scripts
+    metadata:
+      description: Detects NPM packages with preinstall, postinstall, or install scripts
+      category: security
+      confidence: high
+    patterns:
+      - pattern-either:
+          - pattern: |
+              {
+                ...
+                "scripts": {
+                  ...
+                  "preinstall": $SCRIPT,
+                  ...
+                },
+                ...
+              }
+          - pattern: |
+              {
+                ...
+                "scripts": {
+                  ...
+                  "postinstall": $SCRIPT,
+                  ...
+                },
+                ...
+              }
+          - pattern: |
+              {
+                ...
+                "scripts": {
+                  ...
+                  "install": $SCRIPT,
+                  ...
+                },
+                ...
+              }
+    severity: WARNING
