@@ -238,31 +238,32 @@ class NPMScanner(BaseScanner):
             results['suspicious_keywords'] += len(keyword_packages)
             suspicious_packages.extend(keyword_packages)
             
-            # Send alerts for keyword findings
+            # Log keyword findings but don't alert (too noisy - let GuardDog handle it)
             for pkg in keyword_packages:
-                self._send_metadata_finding_alert(pkg, "suspicious_keywords", f"Suspicious keywords detected")
+                logger.debug(f"   🔍 Keywords logged for GuardDog analysis: {pkg.name}")
             
             # Check for size anomalies
             size_anomaly_packages = self._detect_size_anomalies(author_pkgs)
             results['size_anomalies'] += len(size_anomaly_packages)
             suspicious_packages.extend(size_anomaly_packages)
             
-            # Send alerts for significant size changes between versions
+            # Send alerts ONLY for significant size changes between versions (not for large new packages)
             for pkg in size_anomaly_packages:
                 previous_version = database.get_previous_version(pkg.name, pkg.version, pkg.ecosystem)
                 if previous_version and previous_version.unpack_size:
-                    size_change_ratio = (pkg.unpack_size - previous_version.unpack_size) / previous_version.unpack_size
-                    size_change_percent = size_change_ratio * 100
-                    if size_change_ratio > 3.0:
-                        self._send_metadata_finding_alert(pkg, "significant_size_increase", 
-                            f"Package size increased by {size_change_percent:.1f}% ({previous_version.unpack_size:,} → {pkg.unpack_size:,} bytes)")
-                    elif size_change_ratio < -0.9:
-                        self._send_metadata_finding_alert(pkg, "significant_size_decrease", 
-                            f"Package size decreased by {abs(size_change_percent):.1f}% ({previous_version.unpack_size:,} → {pkg.unpack_size:,} bytes)")
-                else:
-                    # For extremely large new packages
-                    self._send_metadata_finding_alert(pkg, "extremely_large_new_package", 
-                        f"New package is extremely large ({pkg.unpack_size:,} bytes)")
+                    # Only alert if current package is chronologically newer than previous
+                    if pkg.published_at and previous_version.published_at and pkg.published_at > previous_version.published_at:
+                        size_change_ratio = (pkg.unpack_size - previous_version.unpack_size) / previous_version.unpack_size
+                        size_change_percent = size_change_ratio * 100
+                        if size_change_ratio > 3.0:
+                            self._send_metadata_finding_alert(pkg, "significant_size_increase", 
+                                f"Package size increased by {size_change_percent:.1f}% ({previous_version.unpack_size:,} → {pkg.unpack_size:,} bytes)")
+                        elif size_change_ratio < -0.9:
+                            self._send_metadata_finding_alert(pkg, "significant_size_decrease", 
+                                f"Package size decreased by {abs(size_change_percent):.1f}% ({previous_version.unpack_size:,} → {pkg.unpack_size:,} bytes)")
+                    else:
+                        logger.debug(f"   ⏱️ Skipping size change alert for {pkg.name}@{pkg.version} - not chronologically newer than previous version")
+                # Note: No alert for large new packages - just log and let GuardDog analyze them
             
             # Check for GuardDog metadata-based suspicious indicators
             guarddog_suspicious = self._detect_guarddog_metadata_suspicious(author_pkgs)
@@ -444,17 +445,25 @@ class NPMScanner(BaseScanner):
         """Send Slack alert for metadata-based findings."""
         try:
             # Create a simple threat detection result for metadata findings
-            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, SecurityFinding
+            
+            # Create a security finding for this metadata issue
+            security_finding = SecurityFinding(
+                finding_type=finding_type,
+                severity=RiskLevel.MEDIUM,
+                description=description,
+                source="metadata_analysis"
+            )
             
             threat_result = ThreatDetectionResult(
                 package=package,
                 risk_level=RiskLevel.MEDIUM,  # Metadata findings are medium risk
                 alert_priority=AlertPriority.MEDIUM,
                 combined_risk_score=0.5,  # Default score for metadata findings
-                detection_timestamp=datetime.now(timezone.utc),
-                findings=[f"{finding_type}: {description}"],
+                security_findings=[security_finding],
                 velocity_pattern=None,
-                guarddog_analysis=None
+                guarddog_analysis=None,
+                should_alert=True
             )
             
             slack_manager.send_threat_detection_alert(threat_result)
@@ -470,7 +479,7 @@ class NPMScanner(BaseScanner):
     def _send_diff_analysis_alert(self, analysis, diff_findings: List[str]):
         """Send Slack alert for version diff analysis findings."""
         try:
-            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, PackageVersion
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, PackageVersion, SecurityFinding
             
             # Create package version from analysis
             package = PackageVersion(
@@ -482,15 +491,25 @@ class NPMScanner(BaseScanner):
                 published_at=None
             )
             
+            # Create security findings for diff analysis
+            security_findings = []
+            for finding in diff_findings:
+                security_findings.append(SecurityFinding(
+                    finding_type="version_diff",
+                    severity=RiskLevel.MEDIUM,
+                    description=finding,
+                    source="diff_analysis"
+                ))
+            
             threat_result = ThreatDetectionResult(
                 package=package,
                 risk_level=RiskLevel.MEDIUM,  # Diff findings are medium risk
                 alert_priority=AlertPriority.MEDIUM, 
                 combined_risk_score=analysis.combined_risk_score,
-                detection_timestamp=analysis.analysis_timestamp,
-                findings=[f"Version diff analysis: {', '.join(diff_findings)}"],
+                security_findings=security_findings,
                 velocity_pattern=None,
-                guarddog_analysis=analysis
+                guarddog_analysis=analysis,
+                should_alert=True
             )
             
             slack_manager.send_threat_detection_alert(threat_result)
@@ -502,7 +521,7 @@ class NPMScanner(BaseScanner):
     def _send_guarddog_metadata_alert(self, package: PackageVersion, analysis):
         """Send Slack alert for GuardDog metadata findings."""
         try:
-            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, SecurityFinding
             
             # Map risk score to risk level
             if analysis.metadata_risk_score >= 0.7:
@@ -514,18 +533,27 @@ class NPMScanner(BaseScanner):
             else:
                 risk_level = RiskLevel.LOW
                 alert_priority = AlertPriority.LOW
-                
-            findings = [f"GuardDog metadata analysis: {', '.join(analysis.metadata_findings)}"] if analysis.metadata_findings else []
+            
+            # Create security findings from metadata findings    
+            security_findings = []
+            if analysis.metadata_findings:
+                for finding in analysis.metadata_findings:
+                    security_findings.append(SecurityFinding(
+                        finding_type="guarddog_metadata",
+                        severity=risk_level,
+                        description=finding,
+                        source="guarddog"
+                    ))
             
             threat_result = ThreatDetectionResult(
                 package=package,
                 risk_level=risk_level,
                 alert_priority=alert_priority,
                 combined_risk_score=analysis.metadata_risk_score,
-                detection_timestamp=analysis.analysis_timestamp,
-                findings=findings,
+                security_findings=security_findings,
                 velocity_pattern=None,
-                guarddog_analysis=analysis
+                guarddog_analysis=analysis,
+                should_alert=True
             )
             
             slack_manager.send_threat_detection_alert(threat_result)

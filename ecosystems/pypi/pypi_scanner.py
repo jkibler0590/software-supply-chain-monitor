@@ -253,19 +253,19 @@ class PyPIScanner(BaseScanner):
                 if previous_version and current_size:
                     previous_size = previous_version.unpack_size or getattr(previous_version, 'download_size', None)
                     if previous_size:
-                        size_change_ratio = (current_size - previous_size) / previous_size
-                        size_change_percent = size_change_ratio * 100
-                        if size_change_ratio > 3.0:
-                            self._send_metadata_finding_alert(pkg, "significant_size_increase", 
-                                f"Package size increased by {size_change_percent:.1f}% ({previous_size:,} → {current_size:,} bytes)")
-                        elif size_change_ratio < -0.9:
-                            self._send_metadata_finding_alert(pkg, "significant_size_decrease", 
-                                f"Package size decreased by {abs(size_change_percent):.1f}% ({previous_size:,} → {current_size:,} bytes)")
-                else:
-                    # For extremely large new packages
-                    if current_size:
-                        self._send_metadata_finding_alert(pkg, "extremely_large_new_package", 
-                            f"New package is extremely large ({current_size:,} bytes)")
+                        # Only alert if current package is chronologically newer than previous
+                        if pkg.published_at and previous_version.published_at and pkg.published_at > previous_version.published_at:
+                            size_change_ratio = (current_size - previous_size) / previous_size
+                            size_change_percent = size_change_ratio * 100
+                            if size_change_ratio > 3.0:
+                                self._send_metadata_finding_alert(pkg, "significant_size_increase", 
+                                    f"Package size increased by {size_change_percent:.1f}% ({previous_size:,} → {current_size:,} bytes)")
+                            elif size_change_ratio < -0.9:
+                                self._send_metadata_finding_alert(pkg, "significant_size_decrease", 
+                                    f"Package size decreased by {abs(size_change_percent):.1f}% ({previous_size:,} → {current_size:,} bytes)")
+                        else:
+                            logger.debug(f"   ⏱️ Skipping size change alert for {pkg.name}@{pkg.version} - not chronologically newer than previous version")
+                # Note: No alert for large new packages - just log and let GuardDog analyze them
             
             # Check for GuardDog metadata-based suspicious indicators
             guarddog_suspicious = self._detect_guarddog_metadata_suspicious(author_pkgs)
@@ -317,7 +317,7 @@ class PyPIScanner(BaseScanner):
     def _send_diff_analysis_alert(self, analysis, diff_findings: List[str]):
         """Send Slack alert for version diff analysis findings."""
         try:
-            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, PackageVersion
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, PackageVersion, SecurityFinding
             from datetime import datetime, timezone
             
             # Create package version from analysis
@@ -330,15 +330,25 @@ class PyPIScanner(BaseScanner):
                 published_at=None
             )
             
+            # Create security findings for diff analysis
+            security_findings = []
+            for finding in diff_findings:
+                security_findings.append(SecurityFinding(
+                    finding_type="version_diff",
+                    severity=RiskLevel.MEDIUM,
+                    description=finding,
+                    source="diff_analysis"
+                ))
+            
             threat_result = ThreatDetectionResult(
                 package=package,
                 risk_level=RiskLevel.MEDIUM,  # Diff findings are medium risk
                 alert_priority=AlertPriority.MEDIUM, 
                 combined_risk_score=analysis.combined_risk_score,
-                detection_timestamp=analysis.analysis_timestamp,
-                findings=[f"Version diff analysis: {', '.join(diff_findings)}"],
+                security_findings=security_findings,
                 velocity_pattern=None,
-                guarddog_analysis=analysis
+                guarddog_analysis=analysis,
+                should_alert=True
             )
             
             slack_manager.send_threat_detection_alert(threat_result)
@@ -350,18 +360,26 @@ class PyPIScanner(BaseScanner):
     def _send_metadata_finding_alert(self, package: PackageVersion, finding_type: str, description: str):
         """Send Slack alert for metadata-based findings."""
         try:
-            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, SecurityFinding
             from datetime import datetime, timezone
+            
+            # Create a security finding for this metadata issue
+            security_finding = SecurityFinding(
+                finding_type=finding_type,
+                severity=RiskLevel.MEDIUM,
+                description=description,
+                source="metadata_analysis"
+            )
             
             threat_result = ThreatDetectionResult(
                 package=package,
                 risk_level=RiskLevel.MEDIUM,  # Metadata findings are medium risk
                 alert_priority=AlertPriority.MEDIUM,
                 combined_risk_score=0.5,  # Default score for metadata findings
-                detection_timestamp=datetime.now(timezone.utc),
-                findings=[f"{finding_type}: {description}"],
+                security_findings=[security_finding],
                 velocity_pattern=None,
-                guarddog_analysis=None
+                guarddog_analysis=None,
+                should_alert=True
             )
             
             slack_manager.send_threat_detection_alert(threat_result)
