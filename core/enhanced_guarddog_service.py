@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 try:
     import guarddog
     from guarddog.analyzer.analyzer import Analyzer
-    from guarddog.scanners.pypi_package_scanner import PyPIPackageScanner
+    from guarddog.scanners.pypi_package_scanner import PypiPackageScanner
     from guarddog.scanners.npm_package_scanner import NPMPackageScanner
     GUARDDOG_AVAILABLE = True
     logger.info("🛡️ Enhanced GuardDog integration enabled")
@@ -46,7 +46,7 @@ class EnhancedGuardDogService:
             
             # Package scanners for tarball downloads
             self.npm_scanner = NPMPackageScanner()
-            self.pypi_scanner = PyPIPackageScanner()
+            self.pypi_scanner = PypiPackageScanner()
             
             logger.debug("Enhanced GuardDog analyzers initialized")
         except Exception as e:
@@ -268,6 +268,19 @@ class EnhancedGuardDogService:
             with open(rule_file, 'w') as f:
                 f.write(rule_content)
     
+    def _determine_risk_level(self, risk_score: float) -> str:
+        """Determine risk level based on risk score."""
+        if risk_score >= 0.8:
+            return 'CRITICAL'
+        elif risk_score >= 0.6:
+            return 'HIGH'
+        elif risk_score >= 0.4:
+            return 'MEDIUM'
+        elif risk_score >= 0.2:
+            return 'LOW'
+        else:
+            return 'MINIMAL'
+    
     def analyze_package_metadata(self, package: PackageVersion) -> Optional[GuardDogAnalysis]:
         """Analyze package metadata using GuardDog with enhanced detection."""
         if not self.available:
@@ -297,11 +310,11 @@ class EnhancedGuardDogService:
                 package_name=package.name,
                 version=package.version,
                 ecosystem=package.ecosystem,
-                analysis_type="metadata",
-                risk_score=risk_score,
-                findings=findings,
                 analysis_timestamp=datetime.now(timezone.utc),
-                guarddog_version=getattr(guarddog, '__version__', 'unknown')
+                metadata_risk_score=risk_score,
+                combined_risk_score=risk_score,
+                risk_level=self._determine_risk_level(risk_score),
+                metadata_findings=findings
             )
             
         except Exception as e:
@@ -370,11 +383,11 @@ class EnhancedGuardDogService:
                     package_name=package.name,
                     version=package.version,
                     ecosystem=package.ecosystem,
-                    analysis_type="static_analysis_with_diff",
-                    risk_score=risk_score,
-                    findings=all_findings,
                     analysis_timestamp=datetime.now(timezone.utc),
-                    guarddog_version=getattr(guarddog, '__version__', 'unknown')
+                    metadata_risk_score=0.0,  # Only source analysis performed
+                    combined_risk_score=risk_score,
+                    risk_level=self._determine_risk_level(risk_score),
+                    source_findings=all_findings
                 )
                 
         except Exception as e:
@@ -585,11 +598,11 @@ class EnhancedGuardDogService:
             'description': package.description,
             'homepage': package.homepage,
             'repository': package.repository_url,
-            'keywords': package.keywords.split(',') if package.keywords else [],
+            'keywords': package.keywords or [],
             'license': package.license,
             'dependencies': package.dependencies or {},
             'dev_dependencies': package.dev_dependencies or {},
-            'maintainers': package.maintainers.split(',') if package.maintainers else [],
+            'maintainers': package.maintainers or [],
             'published_at': package.published_at.isoformat() if package.published_at else None,
             'file_count': package.file_count,
             'unpack_size': package.unpack_size,

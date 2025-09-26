@@ -18,6 +18,17 @@ from core.models import PackageEcosystem, ScanningSession, ThreatDetectionResult
 from ecosystems.npm.npm_scanner import npm_scanner
 from notifications.slack_alerts import slack_manager
 
+logger = logging.getLogger(__name__)
+
+# Import health monitoring
+try:
+    from core.health_scheduler import health_scheduler
+    HEALTH_MONITORING_AVAILABLE = True
+except ImportError as e:
+    HEALTH_MONITORING_AVAILABLE = False
+    health_scheduler = None
+    logger.warning(f"Health monitoring not available: {e}")
+
 # Import PyPI scanner when available
 try:
     from ecosystems.pypi.pypi_scanner import pypi_scanner
@@ -26,8 +37,6 @@ except ImportError as e:
     PYPI_SCANNER_AVAILABLE = False
     pypi_scanner = None
     logger.warning(f"PyPI scanner not available: {e}")
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,7 +56,7 @@ class MultiEcosystemScanResult:
 class SupplyChainOrchestrator:
     """Main orchestrator for supply chain security scanning."""
     
-    def __init__(self):
+    def __init__(self, enable_health_monitoring: bool = True):
         """Initialize the orchestrator with available scanners."""
         self.scanners = {
             PackageEcosystem.NPM: npm_scanner,
@@ -61,6 +70,13 @@ class SupplyChainOrchestrator:
             logger.info("ℹ️  PyPI scanner not available")
         
         self.active_scan_result: Optional[MultiEcosystemScanResult] = None
+        self.health_monitoring_enabled = enable_health_monitoring and HEALTH_MONITORING_AVAILABLE
+        self.health_monitoring_task: Optional[asyncio.Task] = None
+        
+        if self.health_monitoring_enabled:
+            logger.info("✅ Health monitoring enabled")
+        else:
+            logger.info("ℹ️  Health monitoring disabled or unavailable")
         
     async def run_multi_ecosystem_scan(
         self, 
@@ -295,6 +311,93 @@ class SupplyChainOrchestrator:
         )
         
         return validation_results
+
+
+    # Health Monitoring Methods
+    async def start_health_monitoring(self, check_interval_minutes: int = 60):
+        """Start health monitoring if enabled."""
+        if not self.health_monitoring_enabled:
+            logger.warning("Health monitoring not available or disabled")
+            return False
+            
+        if self.health_monitoring_task and not self.health_monitoring_task.done():
+            logger.warning("Health monitoring already running")
+            return True
+            
+        try:
+            # Configure health scheduler
+            health_scheduler.check_interval_minutes = check_interval_minutes
+            
+            # Start monitoring as background task
+            self.health_monitoring_task = asyncio.create_task(
+                health_scheduler.start_monitoring()
+            )
+            
+            logger.info(f"🩺 Health monitoring started (interval: {check_interval_minutes} minutes)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start health monitoring: {e}")
+            return False
+    
+    def stop_health_monitoring(self):
+        """Stop health monitoring."""
+        if not self.health_monitoring_enabled:
+            return
+            
+        try:
+            health_scheduler.stop_monitoring()
+            
+            if self.health_monitoring_task and not self.health_monitoring_task.done():
+                self.health_monitoring_task.cancel()
+                
+            logger.info("🩺 Health monitoring stopped")
+            
+        except Exception as e:
+            logger.error(f"Failed to stop health monitoring: {e}")
+    
+    async def run_manual_health_check(self) -> dict:
+        """Run a manual health check and return results."""
+        if not self.health_monitoring_enabled:
+            return {
+                'error': 'Health monitoring not available',
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        try:
+            return await health_scheduler.run_manual_check()
+        except Exception as e:
+            logger.error(f"Manual health check failed: {e}")
+            return {
+                'error': str(e),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+    
+    def get_health_status(self) -> dict:
+        """Get health monitoring status."""
+        if not self.health_monitoring_enabled:
+            return {
+                'enabled': False,
+                'available': HEALTH_MONITORING_AVAILABLE,
+                'reason': 'Health monitoring not available or disabled'
+            }
+            
+        try:
+            return {
+                'enabled': True,
+                'available': True,
+                'scheduler_status': health_scheduler.get_status(),
+                'monitoring_task_running': (
+                    self.health_monitoring_task and 
+                    not self.health_monitoring_task.done()
+                )
+            }
+        except Exception as e:
+            return {
+                'enabled': True,
+                'available': True,
+                'error': str(e)
+            }
 
 
 # Global orchestrator instance

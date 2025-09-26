@@ -181,7 +181,7 @@ class PyPIScanner(BaseScanner):
                         
                         # Log high-risk findings
                         if analysis.risk_score >= 0.7:
-                            logger.warning(f"🚨 High-risk GuardDog findings for {analysis.package_name}@{analysis.version} (score: {analysis.risk_score:.2f})")
+                            logger.warning(f"🚨 High-risk GuardDog findings for {analysis.package_name}@{analysis.version} (score: {analysis.combined_risk_score:.2f})")
             
             for pattern in patterns:
                 # Check if we've already alerted for this pattern

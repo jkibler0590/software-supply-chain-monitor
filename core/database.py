@@ -327,12 +327,13 @@ class SupplyChainDatabase:
                      source_findings, guarddog_metadata_results, guarddog_source_results, analysis_error)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    analysis.package_name, analysis.version, analysis.ecosystem.value,
+                    analysis.package_name, analysis.version, 
+                    analysis.ecosystem.value if hasattr(analysis.ecosystem, 'value') else str(analysis.ecosystem),
                     analysis.analysis_timestamp.isoformat(),
                     analysis.metadata_risk_score,
                     analysis.source_risk_score,
                     analysis.combined_risk_score,
-                    analysis.risk_level.value,
+                    analysis.risk_level.value if hasattr(analysis.risk_level, 'value') else str(analysis.risk_level),
                     json.dumps(analysis.metadata_findings),
                     json.dumps(analysis.source_findings),
                     json.dumps(analysis.guarddog_metadata_results or {}),
@@ -369,15 +370,11 @@ class SupplyChainDatabase:
                     package_name=row[0],
                     version=row[1],
                     ecosystem=PackageEcosystem(row[2]),
-                    analysis_type="combined",
-                    risk_score=row[6],  # combined_risk_score
-                    findings=json.loads(row[8] or '[]') + json.loads(row[9] or '[]'),  # metadata + source findings
                     analysis_timestamp=datetime.fromisoformat(row[3]),
-                    guarddog_version="unknown",
-                    metadata_risk_score=row[4],
+                    metadata_risk_score=row[4] or 0.0,
                     source_risk_score=row[5],
-                    combined_risk_score=row[6],
-                    risk_level=RiskLevel(row[7]),
+                    combined_risk_score=row[6] or 0.0,
+                    risk_level=row[7],  # Store as string, not enum
                     metadata_findings=json.loads(row[8] or '[]'),
                     source_findings=json.loads(row[9] or '[]'),
                     guarddog_metadata_results=json.loads(row[10] or '{}'),
