@@ -263,13 +263,20 @@ class NPMClient(BasePackageClient):
         # Extract maintainers/author info
         maintainers_data = version_data.get('maintainers', raw_data.get('maintainers', []))
         author_data = version_data.get('author', raw_data.get('author', {}))
+        npm_user_data = version_data.get('_npmUser', {})
         
-        # Parse author
-        if isinstance(author_data, dict):
+        # Parse author - prioritize _npmUser (actual publisher) over author field
+        if isinstance(npm_user_data, dict) and npm_user_data.get('name'):
+            # Use actual publisher from _npmUser field
+            author = npm_user_data.get('name')
+            author_email = npm_user_data.get('email')
+        elif isinstance(author_data, dict) and author_data.get('name'):
+            # Valid author dict with name
             author = author_data.get('name', 'unknown')
             author_email = author_data.get('email')
-        elif isinstance(author_data, str):
-            author = author_data
+        elif isinstance(author_data, str) and author_data.strip():
+            # Valid author string
+            author = author_data.strip()
             author_email = None
         else:
             # Fallback to first maintainer
