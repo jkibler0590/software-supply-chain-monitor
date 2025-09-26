@@ -245,6 +245,28 @@ class PyPIScanner(BaseScanner):
             results['size_anomalies'] += len(size_anomaly_packages)
             suspicious_packages.extend(size_anomaly_packages)
             
+            # Send alerts for significant size changes between versions
+            for pkg in size_anomaly_packages:
+                previous_version = database.get_previous_version(pkg.name, pkg.version, pkg.ecosystem)
+                current_size = pkg.unpack_size or getattr(pkg, 'download_size', None)
+                
+                if previous_version and current_size:
+                    previous_size = previous_version.unpack_size or getattr(previous_version, 'download_size', None)
+                    if previous_size:
+                        size_change_ratio = (current_size - previous_size) / previous_size
+                        size_change_percent = size_change_ratio * 100
+                        if size_change_ratio > 3.0:
+                            self._send_metadata_finding_alert(pkg, "significant_size_increase", 
+                                f"Package size increased by {size_change_percent:.1f}% ({previous_size:,} → {current_size:,} bytes)")
+                        elif size_change_ratio < -0.9:
+                            self._send_metadata_finding_alert(pkg, "significant_size_decrease", 
+                                f"Package size decreased by {abs(size_change_percent):.1f}% ({previous_size:,} → {current_size:,} bytes)")
+                else:
+                    # For extremely large new packages
+                    if current_size:
+                        self._send_metadata_finding_alert(pkg, "extremely_large_new_package", 
+                            f"New package is extremely large ({current_size:,} bytes)")
+            
             # Check for GuardDog metadata-based suspicious indicators
             guarddog_suspicious = self._detect_guarddog_metadata_suspicious(author_pkgs)
             results['guarddog_metadata_suspicious'] += len(guarddog_suspicious)
@@ -268,12 +290,90 @@ class PyPIScanner(BaseScanner):
             for analysis in guarddog_analyses:
                 database.add_guarddog_analysis(analysis)
                 
+                # Send Slack alerts for medium+ risk findings (≥0.6)
+                if analysis.combined_risk_score >= 0.6:
+                    slack_manager.send_guarddog_alert(analysis)
+                    logger.warning(f"📢 Sent GuardDog alert for {analysis.package_name}@{analysis.version} (score: {analysis.combined_risk_score:.2f})")
+                    
+                    # Update session alert count
+                    if self.current_session:
+                        self.current_session.alerts_sent += 1
+                
                 # Log high-risk findings
-                if analysis.risk_score >= 0.7:
-                    logger.warning(f"🚨 High-risk GuardDog findings for {analysis.package_name}@{analysis.version} (score: {analysis.risk_score:.2f})")
+                if analysis.combined_risk_score >= 0.7:
+                    logger.warning(f"🚨 High-risk GuardDog findings for {analysis.package_name}@{analysis.version} (score: {analysis.combined_risk_score:.2f})")
+                
+                # Check for diff analysis findings and send alerts
+                if analysis.source_findings:
+                    diff_findings = [f for f in analysis.source_findings if 'version_diff_' in f]
+                    if diff_findings:
+                        self._send_diff_analysis_alert(analysis, diff_findings)
+                        # Update session alert count for diff alerts
+                        if self.current_session:
+                            self.current_session.alerts_sent += 1
         
         return results
     
+    def _send_diff_analysis_alert(self, analysis, diff_findings: List[str]):
+        """Send Slack alert for version diff analysis findings."""
+        try:
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority, PackageVersion
+            from datetime import datetime, timezone
+            
+            # Create package version from analysis
+            package = PackageVersion(
+                name=analysis.package_name,
+                version=analysis.version,
+                ecosystem=analysis.ecosystem,
+                author="Unknown",  # Not available in GuardDogAnalysis
+                unpack_size=None,
+                published_at=None
+            )
+            
+            threat_result = ThreatDetectionResult(
+                package=package,
+                risk_level=RiskLevel.MEDIUM,  # Diff findings are medium risk
+                alert_priority=AlertPriority.MEDIUM, 
+                combined_risk_score=analysis.combined_risk_score,
+                detection_timestamp=analysis.analysis_timestamp,
+                findings=[f"Version diff analysis: {', '.join(diff_findings)}"],
+                velocity_pattern=None,
+                guarddog_analysis=analysis
+            )
+            
+            slack_manager.send_threat_detection_alert(threat_result)
+            logger.info(f"📢 Sent diff analysis alert for {analysis.package_name}@{analysis.version}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send diff analysis alert for {analysis.package_name}: {e}")
+
+    def _send_metadata_finding_alert(self, package: PackageVersion, finding_type: str, description: str):
+        """Send Slack alert for metadata-based findings."""
+        try:
+            from core.models import ThreatDetectionResult, RiskLevel, AlertPriority
+            from datetime import datetime, timezone
+            
+            threat_result = ThreatDetectionResult(
+                package=package,
+                risk_level=RiskLevel.MEDIUM,  # Metadata findings are medium risk
+                alert_priority=AlertPriority.MEDIUM,
+                combined_risk_score=0.5,  # Default score for metadata findings
+                detection_timestamp=datetime.now(timezone.utc),
+                findings=[f"{finding_type}: {description}"],
+                velocity_pattern=None,
+                guarddog_analysis=None
+            )
+            
+            slack_manager.send_threat_detection_alert(threat_result)
+            logger.info(f"📢 Sent metadata alert for {package.name}@{package.version}: {finding_type}")
+            
+            # Update session alert count
+            if self.current_session:
+                self.current_session.alerts_sent += 1
+            
+        except Exception as e:
+            logger.error(f"Failed to send metadata alert for {package.name}: {e}")
+
     def _is_test_package(self, package_name: str) -> bool:
         """Check if a package appears to be a test package."""
         return any(pattern in package_name for pattern in self.test_package_patterns)
@@ -288,10 +388,26 @@ class PyPIScanner(BaseScanner):
         return version in suspicious_patterns
     
     def _has_recent_data(self, package_name: str) -> bool:
-        """Check if we already have recent data for a package."""
-        # This could be enhanced to check the actual database
-        # For now, return False to process all packages
-        return False
+        """Check if we already have recent data for a package (catch-up logic)."""
+        try:
+            import sqlite3
+            from datetime import datetime, timezone, timedelta
+            # Check if we have any version of this package from within the last 24 hours
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=config.HOURS_BACK)
+            
+            with sqlite3.connect(database.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT 1 FROM package_versions 
+                    WHERE package_name = ? 
+                    AND ecosystem = ? 
+                    AND published_at > ?
+                    LIMIT 1
+                ''', (package_name, PackageEcosystem.PYPI.value, cutoff_time.isoformat()))
+                
+                return cursor.fetchone() is not None
+        except Exception as e:
+            # If there's an error checking, assume we don't have the data
+            return False
     
     def _is_automated_author(self, author: str) -> bool:
         """Check if an author appears to be an automated service."""
@@ -401,20 +517,39 @@ class PyPIScanner(BaseScanner):
         return suspicious_count
     
     def _detect_size_anomalies(self, packages: List[PackageVersion]) -> List[PackageVersion]:
-        """Detect packages with unusual size characteristics."""
+        """Detect packages with significant size changes between versions."""
         anomaly_packages = []
         
         for pkg in packages:
             # PyPI packages often don't have unpack_size, so check download_size if available
-            size_to_check = pkg.unpack_size or getattr(pkg, 'download_size', None)
+            current_size = pkg.unpack_size or getattr(pkg, 'download_size', None)
             
-            if not size_to_check:
+            if not current_size:
                 continue
             
-            # Flag packages that are unusually large
-            if size_to_check > 100_000_000:  # > 100MB
-                anomaly_packages.append(pkg)
-                logger.warning(f"   📏 Large PyPI package: {pkg.name} ({size_to_check:,} bytes)")
+            # Get the previous version of this package
+            previous_version = database.get_previous_version(pkg.name, pkg.version, pkg.ecosystem)
+            
+            if previous_version:
+                previous_size = previous_version.unpack_size or getattr(previous_version, 'download_size', None)
+                
+                if previous_size:
+                    # Calculate the size change ratio
+                    size_change_ratio = (current_size - previous_size) / previous_size
+                    size_change_percent = size_change_ratio * 100
+                    
+                    # Flag significant size changes (>300% increase or >90% decrease)
+                    if size_change_ratio > 3.0:  # More than 300% increase
+                        anomaly_packages.append(pkg)
+                        logger.warning(f"   📈 Significant size increase in {pkg.name}: {previous_size:,} → {current_size:,} bytes (+{size_change_percent:.1f}%)")
+                    elif size_change_ratio < -0.9:  # More than 90% decrease  
+                        anomaly_packages.append(pkg)
+                        logger.warning(f"   📉 Significant size decrease in {pkg.name}: {previous_size:,} → {current_size:,} bytes ({size_change_percent:.1f}%)")
+            else:
+                # For packages without previous version data, still flag extremely large packages
+                if current_size > 150_000_000:  # > 150MB (higher threshold for PyPI)
+                    anomaly_packages.append(pkg)
+                    logger.warning(f"   📏 Extremely large new PyPI package: {pkg.name} ({current_size:,} bytes)")
         
         return anomaly_packages
     
@@ -470,11 +605,32 @@ class PyPIScanner(BaseScanner):
             # Phase 2: Filtering
             filtered_packages = self.filter_packages(packages)
             
-            # Phase 3: Package Processing
+            # Phase 3: Package Processing with catch-up logic
             processed_packages = []
             early_stop_count = 0
+            consecutive_existing_count = 0  # Track consecutive packages we already have
             
             for i, package_data in enumerate(filtered_packages):
+                package_name = package_data.get('name', '')
+                
+                # Check if we already have recent data for this package (catch-up logic)
+                if self._has_recent_data(package_name):
+                    consecutive_existing_count += 1
+                    logger.debug(f"   ✓ Already have recent data for {package_name}")
+                    
+                    # If we've hit multiple consecutive packages we already have, we've caught up
+                    if consecutive_existing_count >= config.CATCH_UP_THRESHOLD:
+                        logger.info(f"   🎯 Caught up with recent changes after processing {i + 1} packages (found {consecutive_existing_count} consecutive existing packages)")
+                        break
+                    
+                    if session:
+                        session.packages_skipped += 1
+                    continue
+                
+                # Reset consecutive counter when we find a new package
+                consecutive_existing_count = 0
+                
+                # Process the package
                 if config.EARLY_STOPPING_ENABLED and early_stop_count >= config.EARLY_STOPPING_THRESHOLD:
                     logger.info(f"   🛑 Early stopping after {i} packages (no new data in last {config.EARLY_STOPPING_THRESHOLD})")
                     break
@@ -483,12 +639,12 @@ class PyPIScanner(BaseScanner):
                 if result:
                     processed_packages.append(result)
                     early_stop_count = 0  # Reset counter
+                    logger.debug(f"   📦 Processed new package: {package_name}")
                 else:
                     early_stop_count += 1
                 
                 if session:
                     session.packages_processed = len(processed_packages)
-                    session.packages_skipped = i + 1 - len(processed_packages)
             
             logger.info(f"   📦 Processed {len(processed_packages)} PyPI packages")
             

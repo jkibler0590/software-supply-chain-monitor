@@ -439,6 +439,51 @@ class SupplyChainDatabase:
             
             return cursor.fetchone() is not None
     
+    def get_package_versions_history(self, package_name: str, ecosystem: PackageEcosystem, limit: int = 10) -> List[PackageVersion]:
+        """Get version history for a package, ordered by published date (newest first)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute('''
+                    SELECT package_name, version, ecosystem, author, author_email, published_at,
+                           processed_at, description, keywords, homepage, repository_url, license,
+                           dependencies, dev_dependencies, maintainers, file_count, unpack_size, 
+                           tarball_size, created_at, is_deprecated, deprecated_reason, dist_tags,
+                           shasum, integrity, git_head
+                    FROM package_versions
+                    WHERE package_name = ? AND ecosystem = ?
+                    ORDER BY published_at DESC, version DESC
+                    LIMIT ?
+                ''', (package_name, ecosystem.value, limit))
+                
+                return [self._row_to_package_version(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting package version history: {e}")
+            return []
+    
+    def get_previous_version(self, package_name: str, current_version: str, ecosystem: PackageEcosystem) -> Optional[PackageVersion]:
+        """Get the most recent version before the current version."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute('''
+                    SELECT package_name, version, ecosystem, author, author_email, published_at,
+                           processed_at, description, keywords, homepage, repository_url, license,
+                           dependencies, dev_dependencies, maintainers, file_count, unpack_size, 
+                           tarball_size, created_at, is_deprecated, deprecated_reason, dist_tags,
+                           shasum, integrity, git_head
+                    FROM package_versions
+                    WHERE package_name = ? AND ecosystem = ? AND version != ?
+                    ORDER BY published_at DESC, version DESC
+                    LIMIT 1
+                ''', (package_name, ecosystem.value, current_version))
+                
+                row = cursor.fetchone()
+                return self._row_to_package_version(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting previous version: {e}")
+            return None
+
     def get_recent_author_activities(self, ecosystem: PackageEcosystem,
                                    hours_back: int = 24,
                                    package_filter: Optional[Set[str]] = None) -> Dict[str, List[PackageVersion]]:
@@ -602,27 +647,27 @@ class SupplyChainDatabase:
             version=row['version'],
             ecosystem=PackageEcosystem(row['ecosystem']),
             author=row['author'],
-            author_email=row['author_email'],
+            author_email=row.get('author_email'),
             published_at=datetime.fromisoformat(row['published_at']) if row['published_at'] else None,
-            processed_at=datetime.fromisoformat(row['processed_at']) if row['processed_at'] else None,
-            description=row['description'],
-            keywords=json.loads(row['keywords']) if row['keywords'] else [],
-            homepage=row['homepage'],
-            repository_url=row['repository_url'],
-            license=row['license'],
-            dependencies=json.loads(row['dependencies']) if row['dependencies'] else {},
-            dev_dependencies=json.loads(row['dev_dependencies']) if row['dev_dependencies'] else {},
-            maintainers=json.loads(row['maintainers']) if row['maintainers'] else [],
-            file_count=row['file_count'],
-            unpack_size=row['unpack_size'],
-            tarball_size=row['tarball_size'],
-            created_at=row['created_at'],
-            is_deprecated=bool(row['is_deprecated']),
-            deprecated_reason=row['deprecated_reason'],
-            dist_tags=json.loads(row['dist_tags']) if row['dist_tags'] else {},
-            shasum=row['shasum'],
-            integrity=row['integrity'],
-            git_head=row['git_head']
+            processed_at=datetime.fromisoformat(row['processed_at']) if row.get('processed_at') else None,
+            description=row.get('description'),
+            keywords=json.loads(row['keywords']) if row.get('keywords') else [],
+            homepage=row.get('homepage'),
+            repository_url=row.get('repository_url'),
+            license=row.get('license'),
+            dependencies=json.loads(row['dependencies']) if row.get('dependencies') else {},
+            dev_dependencies=json.loads(row['dev_dependencies']) if row.get('dev_dependencies') else {},
+            maintainers=json.loads(row['maintainers']) if row.get('maintainers') else [],
+            file_count=row.get('file_count'),
+            unpack_size=row.get('unpack_size'),
+            tarball_size=row.get('tarball_size'),
+            created_at=row.get('created_at'),
+            is_deprecated=bool(row.get('is_deprecated', False)),
+            deprecated_reason=row.get('deprecated_reason'),
+            dist_tags=json.loads(row['dist_tags']) if row.get('dist_tags') else {},
+            shasum=row.get('shasum'),
+            integrity=row.get('integrity'),
+            git_head=row.get('git_head')
         )
 
 

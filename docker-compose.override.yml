@@ -1,0 +1,20 @@
+# Development override - mounts source code for live editing
+# This file is automatically loaded by docker-compose
+services:
+  sscm:
+    volumes:
+      # Mount source code for development (in addition to existing volumes)
+      - ./core:/app/core
+      - ./ecosystems:/app/ecosystems
+      - ./notifications:/app/notifications
+      - ./scripts:/app/scripts
+      - ./orchestrator.py:/app/orchestrator.py
+      - ./multi_ecosystem_scanner.py:/app/multi_ecosystem_scanner.py
+      # Keep existing volumes
+      - sscm_data:/data
+      - sscm_logs:/logs
+    
+    # Optional: enable Python to detect file changes
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1  # Prevents .pyc files in mounted dirs

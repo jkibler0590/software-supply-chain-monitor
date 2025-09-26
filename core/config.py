@@ -35,6 +35,7 @@ class Config:
         self.CHANGES_FEED_LIMIT = int(os.getenv('CHANGES_FEED_LIMIT', '1000'))
         self.EARLY_STOPPING_ENABLED = os.getenv('EARLY_STOPPING_ENABLED', 'true').lower() == 'true'
         self.EARLY_STOPPING_THRESHOLD = int(os.getenv('EARLY_STOPPING_THRESHOLD', '5'))
+        self.CATCH_UP_THRESHOLD = int(os.getenv('CATCH_UP_THRESHOLD', '10'))  # Consecutive existing packages before stopping
         
         # Analysis settings
         self.HOURS_BACK = int(os.getenv('HOURS_BACK', '24'))  # Database cleanup window
